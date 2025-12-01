@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Мини-игра: лабиринт с вопросами</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #f0f0f0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, 80px);
+      grid-gap: 10px;
+      margin: 40px 0;
+    }
+    .cell {
+      width: 80px;
+      height: 80px;
+      background: #ddd;
+      border: 2px solid #999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      cursor: pointer;
+    }
+    .cell.active {
+      background: #ffeb3b;
+      border-color: #ff9800;
+    }
+    .cell.correct {
+      background: #8bc34a;
+    }
+    .cell.wrong {
+      background: #f44336;
+    }
+    .cell.start {
+      border-color: #4caf50;
+    }
+    .cell.exit {
+      border-color: #f44336;
+    }
+    .info {
+      margin-top: 10px;
+      font-size: 16px;
+    }
+    .quiz {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 20px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      max-width: 400px;
+      text-align: center;
+      display: none;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+      z-index: 1000;
+    }
+    .quiz button {
+      margin: 5px;
+      padding: 10px 15px;
+      font-size: 16px;
+    }
+    .stats {
+      margin-top: 15px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Мини-игра: лабиринт с вопросами</h2>
+  <p>Каждый раз генерируется новый лабиринт. Старт — в нижней клетке, выход — в верхней.</p>
+  <p>Управление стрелками. Правильный ответ: +100 баллов, неправильный: -100 баллов. Если баллы &lt; 0 — возвращение в начало.</p>
+
+  <div class="info" id="scoreInfo">Баллы: 0 | Правильных: 0 | Неправильных: 0</div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="quiz" id="quiz">
+    <h3 id="question">Вопрос</h3>
+    <button onclick="checkAnswer(0)">A</button>
+    <button onclick="checkAnswer(1)">B</button>
+    <button onclick="checkAnswer(2)">C</button>
+    <p id="feedback"></p>
+    <div class="stats" id="finalStats" style="display:none;"></div>
+  </div>
+
+  <script>
+    // Вопросы и ответы: {question, options, correctIndex}
+    const questions = [
+      {
+        question: "Сколько будет 2+2?",
+        options: ["3", "4", "5"],
+        correctIndex: 1
+      },
+      {
+        question: "Столица Франции?",
+        options: ["Лондон", "Берлин", "Париж"],
+        correctIndex: 2
+      },
+      {
+        question: "Какой газ дышит человек?",
+        options: ["Кислород", "Азот", "Углекислый"],
+        correctIndex: 0
+      },
+      {
+        question: "Сколько сторон у треугольника?",
+        options: ["2", "3", "4"],
+        correctIndex: 1
+      },
+      {
+        question: "Что такое HTML?",
+        options: ["Язык программирования", "Язык разметки", "База данных"],
+        correctIndex: 1
+      },
+      {
+        question: "Сколько пальцев на руке?",
+        options: ["4", "5", "6"],
+        correctIndex: 1
+      },
+      {
+        question: "Сколько дней в неделе?",
+        options: ["6", "7", "8"],
+        correctIndex: 1
+      },
+      {
+        question: "Какой цвет у неба?",
+        options: ["Зелёный", "Красный", "Голубой"],
+        correctIndex: 2
+      },
+      {
+        question: "Что изучает зоология?",
+        options: ["Растения", "Животных", "Грибы"],
+        correctIndex: 1
+      }
+    ];
+
+    const grid = document.getElementById("grid");
+    const quiz = document.getElementById("quiz");
+    const questionEl = document.getElementById("question");
+    const feedbackEl = document.getElementById("feedback");
+    const finalStatsEl = document.getElementById("finalStats");
+    const scoreInfoEl = document.getElementById("scoreInfo");
+
+    // Параметры лабиринта
+    const ROWS = 5;
+    const COLS = 5;
+    const TOTAL = ROWS * COLS;
+
+    // Стартовая и финишная клетки
+    const startIndex = (ROWS - 1) * COLS + Math.floor(COLS / 2); // нижняя центральная
+    const exitIndex = Math.floor(COLS / 2); // верхняя центральная
+
+    let playerPos = startIndex;
+    let awaitingAnswer = false;
+    let finished = false;
+
+    // Статистика
+    let score = 0;
+    let correctCount = 0;
+    let wrongCount = 0;
+
+    // Для соответствия ячеек и вопросов
+    const cellQuestionIndex = new Array(TOTAL);
+    // Флаг: для каких ячеек вопрос уже задавался
+    let cellAsked = new Array(TOTAL).fill(false);
+
+    // Граф лабиринта: список смежности
+    const maze = Array.from({ length: TOTAL }, () => new Set());
+
+    // Проверка существования пути от старта к выходу (BFS)
+    function isPathExists(start, end) {
+      const visited = new Set();
+      const queue = [start];
+      visited.add(start);
+
+      while (queue.length > 0) {
+        const current = queue.shift();
+        if (current === end) return true;
+
+        for (const neighbor of maze[current]) {
+          if (!visited.has(neighbor)) {
+            visited.add(neighbor);
+            queue.push(neighbor);
+          }
+        }
+      }
+
+      return false;
+    }
+
+    // Генерация вопросов по клеткам (циклически/случайно)
+    function assignQuestionsToCells() {
+      const indices = [];
+      for (let i = 0; i < TOTAL; i++) indices.push(i % questions.length);
+      // Перемешаем, чтобы вопросы распределялись случайно
+      for (let i = indices.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [indices[i], indices[j]] = [indices[j], indices[i]];
+      }
+      for (let i = 0; i < TOTAL; i++) {
+        cellQuestionIndex[i] = indices[i];
+      }
+    }
+
+    // Вспомогательные функции для индексов и координат
+    function toIndex(r, c) {
+      return r * COLS + c;
+    }
+    function inBounds(r, c) {
+      return r >= 0 && r < ROWS && c >= 0 && c < COLS;
+    }
+
+    // Генерация лабиринта (DFS backtracker)
+    function generateMaze() {
+      const visited = new Array(TOTAL).fill(false);
+
+      function dfs(idx) {
+        visited[idx] = true;
+        const r = Math.floor(idx / COLS);
+        const c = idx % COLS;
+        const directions = [
+          [0, 1],
+          [0, -1],
+          [1, 0],
+          [-1, 0],
+        ];
+        // перемешаем направления
+        for (let i = directions.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [directions[i], directions[j]] = [directions[j], directions[i]];
+        }
+
+        for (const [dr, dc] of directions) {
+          const nr = r + dr;
+          const nc = c + dc;
+          if (!inBounds(nr, nc)) continue;
+          const nidx = toIndex(nr, nc);
+          if (!visited[nidx]) {
+            // соединяем клетки
+            maze[idx].add(nidx);
+            maze[nidx].add(idx);
+            dfs(nidx);
+          }
+        }
+      }
+
+      dfs(startIndex);
+    }
+
+    // Создаём клетки после генерации лабиринта
+    function createGrid() {
+      grid.innerHTML = "";
+      grid.style.gridTemplateColumns = `repeat(${COLS}, 80px)`;
+      for (let i = 0; i < TOTAL; i++) {
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        cell.dataset.index = i;
+        if (i === startIndex) {
+          cell.classList.add("start");
+          cell.textContent = "S";
+        } else if (i === exitIndex) {
+          cell.classList.add("exit");
+          cell.textContent = "F";
+        } else {
+          cell.textContent = "";
+        }
+        // подсказка для отладки: какие переходы доступны из клетки
+        cell.title = `Доступно: ${[...maze[i]].join(", ")}`;
+        cell.addEventListener("click", () => moveToCell(i));
+        grid.appendChild(cell);
+      }
+    }
+
+    function updateScoreInfo() {
+      scoreInfoEl.textContent = `Баллы: ${score} | Правильных: ${correctCount} | Неправильных: ${wrongCount}`;
+    }
+
+    function updateUI() {
+      const cells = document.querySelectorAll(".cell");
+      cells.forEach((cell, i) => {
+        cell.classList.remove("active");
+        if (i === playerPos) cell.classList.add("active");
+      });
+    }
+
+    function moveToCell(targetIndex) {
+      if (finished) return;
+      if (awaitingAnswer) return; // нельзя двигаться, пока не отвечен вопрос
+      if (targetIndex === playerPos) return;
+
+      // Проверяем, соединены ли клетки коридором лабиринта
+      if (!maze[playerPos].has(targetIndex)) {
+        return;
+      }
+
+      playerPos = targetIndex;
+      updateUI();
+
+      // На финальной клетке вопрос не показываем, сразу завершаем игру
+      if (playerPos === exitIndex) {
+        finishGame();
+      } else {
+        showQuizForCell(playerPos);
+      }
+    }
+
+    function showQuizForCell(index) {
+      // На стартовой клетке S вопрос не нужен
+      if (index === startIndex) {
+        awaitingAnswer = false;
+        quiz.style.display = "none";
+        return;
+      }
+
+      // Если на эту ячейку уже отвечали, вопрос не показываем повторно
+      if (cellAsked[index]) {
+        awaitingAnswer = false;
+        quiz.style.display = "none";
+        return;
+      }
+
+      cellAsked[index] = true;
+      awaitingAnswer = true;
+      quiz.style.display = "block";
+      finalStatsEl.style.display = "none";
+      const qIndex = cellQuestionIndex[index];
+      const q = questions[qIndex];
+      questionEl.textContent = q.question;
+      const buttons = quiz.querySelectorAll("button");
+      buttons.forEach((btn, i) => {
+        btn.textContent = q.options[i];
+      });
+      feedbackEl.textContent = "";
+    }
+
+    function checkAnswer(index) {
+      if (!awaitingAnswer || finished) return;
+      const qIndex = cellQuestionIndex[playerPos];
+      const correct = questions[qIndex].correctIndex;
+      const cells = document.querySelectorAll(".cell");
+      const currentCell = cells[playerPos];
+      if (index === correct) {
+        feedbackEl.textContent = "✅ Правильно! Можете двигаться дальше.";
+        feedbackEl.style.color = "green";
+        score += 100;
+        correctCount += 1;
+        awaitingAnswer = false;
+        updateScoreInfo();
+        if (currentCell) {
+          currentCell.classList.remove("wrong");
+          currentCell.classList.add("correct");
+        }
+
+        if (playerPos === exitIndex) {
+          finishGame();
+        } else {
+          // Скрываем викторину после паузы, чтобы можно было двигаться
+          setTimeout(() => {
+            quiz.style.display = "none";
+          }, 700);
+        }
+      } else {
+        feedbackEl.textContent = "❌ Неправильно! Вы теряете 100 баллов.";
+        feedbackEl.style.color = "red";
+        score -= 100;
+        wrongCount += 1;
+        updateScoreInfo();
+        awaitingAnswer = false;
+        if (currentCell) {
+          currentCell.classList.remove("correct");
+          currentCell.classList.add("wrong");
+        }
+
+        setTimeout(() => {
+          if (score < 0) {
+            alert("Баллы меньше нуля! Вы возвращаетесь в начальную клетку.");
+            playerPos = startIndex;
+            updateUI();
+          }
+          quiz.style.display = "none";
+        }, 700);
+      }
+    }
+
+    function finishGame() {
+      finished = true;
+      quiz.style.display = "none";
+      finalStatsEl.style.display = "none";
+      alert(
+        `Лабиринт пройден!\n\nБаллы: ${score}\nПравильных ответов: ${correctCount}\nНеправильных ответов: ${wrongCount}`
+      );
+    }
+
+    // Инициализация игры с гарантированно проходимым лабиринтом
+    function initGame() {
+      let attempts = 0;
+      const maxAttempts = 10;
+
+      // Сброс базового состояния
+      playerPos = startIndex;
+      awaitingAnswer = false;
+      finished = false;
+      score = 0;
+      correctCount = 0;
+      wrongCount = 0;
+      cellAsked = new Array(TOTAL).fill(false);
+
+      while (attempts < maxAttempts) {
+        // Очистка старого лабиринта
+        maze.forEach((set) => set.clear());
+
+        assignQuestionsToCells();
+        generateMaze();
+
+        if (isPathExists(startIndex, exitIndex)) {
+          console.log(`Путь от старта к выходу найден после ${attempts + 1} попыток.`);
+          break;
+        }
+        attempts++;
+      }
+
+      if (attempts === maxAttempts) {
+        console.warn("Не удалось гарантированно построить проходимый лабиринт, используем последнюю конфигурацию.");
+      }
+
+      createGrid();
+      updateUI();
+      updateScoreInfo();
+
+      // Показать всплывающий вопрос в стартовой клетке
+      showQuizForCell(playerPos);
+    }
+
+    // Управление стрелками
+    document.addEventListener("keydown", (e) => {
+      if (finished) return;
+      const key = e.key;
+      if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(key)) return;
+      e.preventDefault();
+
+      if (awaitingAnswer) {
+        // нужно сначала ответить на вопрос
+        return;
+      }
+
+      const r = Math.floor(playerPos / COLS);
+      const c = playerPos % COLS;
+      let nr = r;
+      let nc = c;
+      if (key === "ArrowRight") nc++;
+      if (key === "ArrowLeft") nc--;
+      if (key === "ArrowDown") nr++;
+      if (key === "ArrowUp") nr--;
+
+      if (!inBounds(nr, nc)) return;
+      const newIndex = toIndex(nr, nc);
+      moveToCell(newIndex);
+    });
+
+    // Запуск игры
+    initGame();
+  </script>
+</body>
+</html>
